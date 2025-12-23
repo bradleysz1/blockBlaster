@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Block Blaster - Hardcore Edition</title>
+    <style>
+        :root {
+            --bg: #0b0e14;
+            --grid-bg: #1a1f26;
+            --cell-empty: #2a323d;
+            --accent: #00d2ff;
+            --accent-glow: rgba(0, 210, 255, 0.4);
+            --danger: #ff4757;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: white;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none;
+        }
+
+        .header { text-align: center; padding: 15px; z-index: 10; width: 100%; }
+        #score { font-size: 3rem; font-weight: 900; margin: 0; color: var(--accent); text-shadow: 0 0 15px var(--accent-glow); transition: all 0.3s; }
+        .stats-row { display: flex; justify-content: center; gap: 20px; font-size: 0.8rem; color: #888; text-transform: uppercase; }
+        #difficulty-label { color: var(--accent); font-weight: bold; }
+        #combo-msg { height: 20px; color: #ffca28; font-weight: bold; font-size: 0.9rem; margin-top: 5px; }
+
+        #game-board {
+            display: grid;
+            grid-template-columns: repeat(8, 42px);
+            grid-template-rows: repeat(8, 42px);
+            gap: 4px;
+            background-color: var(--grid-bg);
+            padding: 12px;
+            border-radius: 12px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+            position: relative;
+        }
+
+        .cell {
+            width: 42px; height: 42px;
+            background-color: var(--cell-empty);
+            border-radius: 4px;
+            transition: all 0.1s ease;
+        }
+
+        .cell.filled { 
+            background: linear-gradient(135deg, var(--accent), #3a7bd5);
+            box-shadow: inset 0 0 8px rgba(255,255,255,0.4);
+        }
+
+        .cell.preview { background-color: var(--accent-glow); transform: scale(0.95); border: 1px solid var(--accent); }
+
+        #inventory {
+            display: flex;
+            justify-content: space-around;
+            width: 100%;
+            max-width: 400px;
+            margin-top: 25px;
+            padding: 15px;
+            background: rgba(255,255,255,0.02);
+            border-radius: 20px;
+        }
+
+        .slot { width: 100px; height: 100px; display: flex; justify-content: center; align-items: center; }
+        .piece { display: grid; gap: 2px; cursor: grab; }
+        .p-block { width: 18px; height: 18px; background: linear-gradient(135deg, var(--accent), #3a7bd5); border-radius: 3px; }
+
+        .dragging { pointer-events: none; z-index: 1000; }
+        .dragging .p-block { width: 42px !important; height: 42px !important; }
+
+        #modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); backdrop-filter: blur(10px);
+            display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 2000;
+        }
+
+        .modal-content {
+            background: #1a1f26; padding: 40px; border-radius: 24px; text-align: center;
+            border: 2px solid var(--accent); box-shadow: 0 0 50px var(--accent-glow);
+        }
+
+        button {
+            background: var(--accent); color: var(--bg); border: none; padding: 15px 40px;
+            border-radius: 50px; font-weight: bold; font-size: 1.1rem; cursor: pointer; margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1 id="score">0</h1>
+        <div class="stats-row">
+            <span>Recorde: <span id="high-score" style="color:white">0</span></span>
+            <span>Nível: <span id="difficulty-label">Básico</span></span>
+        </div>
+        <div id="combo-msg"></div>
+    </div>
+
+    <div id="game-board"></div>
+
+    <div id="inventory">
+        <div class="slot" id="slot-0"></div>
+        <div class="slot" id="slot-1"></div>
+        <div class="slot" id="slot-2"></div>
+    </div>
+
+    <div id="modal">
+        <div class="modal-content">
+            <h2 style="font-size: 2.5rem; margin: 0;">Fim de Jogo</h2>
+            <div id="final-score" style="font-size: 4rem; font-weight: 900; color: var(--accent); margin: 20px 0;">0</div>
+            <button onclick="resetGame()">Reiniciar</button>
+        </div>
+    </div>
+
+    <script>
+        const board = document.getElementById('game-board');
+        const scoreEl = document.getElementById('score');
+        const highScoreEl = document.getElementById('high-score');
+        const diffLabel = document.getElementById('difficulty-label');
+        const comboEl = document.getElementById('combo-msg');
+        const modal = document.getElementById('modal');
+        
+        let score = 0, combo = 0;
+        let highScore = localStorage.getItem('blockBlaster_highScore') || 0;
+        let grid = Array(8).fill().map(() => Array(8).fill(0));
+        let activePiece = null, activeShape = null, offset = { x: 0, y: 0 };
+
+        // TIERS DE PEÇAS
+        const PIECES_EASY = [
+            [[1]], [[1,1]], [[1],[1]], [[1,1],[1,1]], [[1,1,1]]
+        ];
+        const PIECES_MEDIUM = [
+            [[1,1,1,1]], [[1],[1],[1],[1]], [[1,1,1],[0,1,0]], [[1,1],[1,0]], [[1,1,0],[0,1,1]]
+        ];
+        const PIECES_HARD = [
+            [[1,1,1],[1,1,1],[1,1,1]], // Bloco 3x3
+            [[1,1,1,1,1]],             // Linha 5
+            [[1,0,0],[1,0,0],[1,1,1]], // L Gigante
+            [[1,1,1],[1,0,1],[1,1,1]]  // Moldura
+        ];
+
+        function init() {
+            highScoreEl.innerText = highScore;
+            board.innerHTML = '';
+            for (let i = 0; i < 64; i++) {
+                const cell = document.createElement('div');
+                cell.classList.add('cell');
+                board.appendChild(cell);
+            }
+            newRound();
+        }
+
+        function getWeightedRandomPiece() {
+            let pool;
+            if (score < 500) {
+                // Início: Majoritariamente fácil
+                pool = Math.random() < 0.85 ? PIECES_EASY : PIECES_MEDIUM;
+                diffLabel.innerText = "Básico";
+                diffLabel.style.color = "#00d2ff";
+            } else if (score < 1500) {
+                // Médio: Mistura tudo, raramente difícil
+                const r = Math.random();
+                pool = r < 0.4 ? PIECES_EASY : (r < 0.9 ? PIECES_MEDIUM : PIECES_HARD);
+                diffLabel.innerText = "Intermediário";
+                diffLabel.style.color = "#ffca28";
+            } else {
+                // Difícil: Peças complexas aparecem com frequência
+                const r = Math.random();
+                pool = r < 0.3 ? PIECES_EASY : (r < 0.6 ? PIECES_MEDIUM : PIECES_HARD);
+                diffLabel.innerText = "Especialista";
+                diffLabel.style.color = "#ff4757";
+                scoreEl.style.textShadow = "0 0 20px #ff4757";
+            }
+            return pool[Math.floor(Math.random() * pool.length)];
+        }
+
+        function newRound() {
+            ['slot-0', 'slot-1', 'slot-2'].forEach(id => createPiece(id));
+            if (isGameOver()) showGameOver();
+        }
+
+        function createPiece(slotId) {
+            const slot = document.getElementById(slotId);
+            const shape = getWeightedRandomPiece();
+            const piece = document.createElement('div');
+            piece.classList.add('piece');
+            piece.style.gridTemplateColumns = `repeat(${shape[0].length}, 18px)`;
+            
+            shape.forEach(row => row.forEach(val => {
+                const b = document.createElement('div');
+                if (val) b.classList.add('p-block');
+                else b.style.background = 'transparent';
+                piece.appendChild(b);
+            }));
+
+            piece.onpointerdown = (e) => {
+                activePiece = piece; activeShape = shape;
+                piece.classList.add('dragging');
+                piece.style.gridTemplateColumns = `repeat(${shape[0].length}, 42px)`;
+                const rect = piece.getBoundingClientRect();
+                offset.x = rect.width / 2;
+                offset.y = rect.height / 2;
+                movePiece(e);
+                piece.style.position = 'fixed';
+            };
+            slot.appendChild(piece);
+        }
+
+        function movePiece(e) {
+            if (!activePiece) return;
+            activePiece.style.left = (e.clientX - offset.x) + 'px';
+            activePiece.style.top = (e.clientY - offset.y - 40) + 'px';
+            renderBoard();
+            const pos = getPos();
+            if (pos && canPlace(activeShape, pos.r, pos.c)) drawPreview(activeShape, pos.r, pos.c);
+        }
+
+        function getPos() {
+            const bRect = board.getBoundingClientRect();
+            const pRect = activePiece.getBoundingClientRect();
+            const col = Math.round((pRect.left - bRect.left - 12) / 46);
+            const row = Math.round((pRect.top - bRect.top - 12) / 46);
+            return (row >= 0 && row < 8 && col >= 0 && col < 8) ? { r: row, c: col } : null;
+        }
+
+        window.onpointermove = movePiece;
+        window.onpointerup = () => {
+            if (!activePiece) return;
+            const pos = getPos();
+            if (pos && canPlace(activeShape, pos.r, pos.c)) {
+                place(activeShape, pos.r, pos.c);
+                activePiece.remove();
+                checkLines();
+                if (document.querySelectorAll('.piece').length === 0) newRound();
+                else if (isGameOver()) showGameOver();
+            } else {
+                activePiece.classList.remove('dragging');
+                activePiece.style.position = 'relative';
+                activePiece.style.left = '0'; activePiece.style.top = '0';
+                activePiece.style.gridTemplateColumns = `repeat(${activeShape[0].length}, 18px)`;
+            }
+            activePiece = null; renderBoard();
+        };
+
+        function canPlace(shape, r, c) {
+            for (let i = 0; i < shape.length; i++) {
+                for (let j = 0; j < shape[i].length; j++) {
+                    if (shape[i][j]) {
+                        if (r + i >= 8 || c + j >= 8 || grid[r + i][c + j] === 1) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        function drawPreview(shape, r, c) {
+            const cells = document.querySelectorAll('.cell');
+            for (let i = 0; i < shape.length; i++) {
+                for (let j = 0; j < shape[i].length; j++) {
+                    if (shape[i][j]) cells[(r + i) * 8 + (c + j)].classList.add('preview');
+                }
+            }
+        }
+
+        function place(shape, r, c) {
+            for (let i = 0; i < shape.length; i++) {
+                for (let j = 0; j < shape[i].length; j++) {
+                    if (shape[i][j]) grid[r + i][c + j] = 1;
+                }
+            }
+            score += 10;
+            updateScoreDisplay();
+        }
+
+        function renderBoard() {
+            const cells = document.querySelectorAll('.cell');
+            grid.flat().forEach((val, i) => { cells[i].className = val ? 'cell filled' : 'cell'; });
+        }
+
+        function checkLines() {
+            let rClear = [], cClear = [];
+            for (let i = 0; i < 8; i++) {
+                if (grid[i].every(v => v === 1)) rClear.push(i);
+                if (grid.map(r => r[i]).every(v => v === 1)) cClear.push(i);
+            }
+            if (rClear.length || cClear.length) {
+                combo++;
+                score += (rClear.length + cClear.length) * 100 * combo;
+                rClear.forEach(r => grid[r] = Array(8).fill(0));
+                cClear.forEach(c => grid.forEach(row => row[c] = 0));
+                comboEl.innerText = combo > 1 ? `COMBO X${combo}` : "BOA!";
+                setTimeout(() => { comboEl.innerText = ""; }, 1000);
+            } else combo = 0;
+            updateScoreDisplay();
+            renderBoard();
+        }
+
+        function updateScoreDisplay() {
+            scoreEl.innerText = score;
+            if (score > highScore) {
+                highScore = score;
+                highScoreEl.innerText = highScore;
+                localStorage.setItem('blockBlaster_highScore', highScore);
+            }
+        }
+
+        function isGameOver() {
+            const pieces = Array.from(document.querySelectorAll('.piece')).map(p => {
+                const cols = parseInt(p.style.gridTemplateColumns.match(/\d+/)[0]);
+                const blocks = Array.from(p.children);
+                let s = [];
+                for(let i=0; i<blocks.length; i+=cols) 
+                    s.push(blocks.slice(i, i+cols).map(b => b.classList.contains('p-block') ? 1 : 0));
+                return s;
+            });
+            return !pieces.some(s => {
+                for (let r = 0; r < 8; r++) 
+                    for (let c = 0; c < 8; c++) 
+                        if (canPlace(s, r, c)) return true;
+                return false;
+            });
+        }
+
+        function showGameOver() {
+            document.getElementById('final-score').innerText = score;
+            modal.style.display = 'flex';
+        }
+
+        function resetGame() {
+            grid = Array(8).fill().map(() => Array(8).fill(0));
+            score = 0; combo = 0; scoreEl.innerText = '0';
+            modal.style.display = 'none';
+            document.querySelectorAll('.slot').forEach(s => s.innerHTML = '');
+            init();
+        }
+
+        init();
+    </script>
+</body>
+</html>
